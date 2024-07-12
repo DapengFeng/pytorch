@@ -1759,7 +1759,9 @@ class CppKernel(Kernel):
 
         size_str = V.kernel.sexpr(self.rename_indexing(size)) if upper else None
 
-        line = self.indirect_assert(csevar, "0" if lower else None, size_str)
+        line = self.indirect_assert(
+            csevar, "0" if lower else None, size_str, self._load_mask
+        )
         self.cse.generate(buffer, line, assignment=False)
 
     def load(self, name: str, index: sympy.Expr):
@@ -2585,17 +2587,19 @@ class CppVecKernel(CppKernel):
             raise NotImplementedError
 
     def indirect_assert(self, var, lower, upper, mask=None):
-        assert not mask, "do not support mask in indirect_indexing assertion"
         assert isinstance(var, CppCSEVariable)
         assert var.dtype is not None
-        if not var.is_vec:
+        if not (var.is_vec or (mask and mask.is_vec)):
             return super().indirect_assert(var, lower, upper, mask)
+
+        var_dtype = var.dtype
         lower_scalar = lower
         upper_scalar = upper
-        if lower:
-            lower = f"{self._get_vec_type(var.dtype)}({lower})"
-        if upper:
-            upper = f"{self._get_vec_type(var.dtype)}({upper})"
+        if var.is_vec:
+            if lower:
+                lower = f"{self._get_vec_type(var.dtype)}({lower})"
+            if upper:
+                upper = f"{self._get_vec_type(var.dtype)}({upper})"
         if lower and upper:
             cond = f"({lower} <= {var}) & ({var} < {upper})"
             cond_print = f"{lower_scalar} <= {var} < {upper_scalar}"
@@ -2606,7 +2610,14 @@ class CppVecKernel(CppKernel):
             assert upper
             cond = f"{var} < {upper}"
             cond_print = f"{var} < {upper_scalar}"
-        cond = f"({self._get_mask_type(var.dtype)}({cond})).all_masked()"
+        if not var.is_vec:
+            cond = f"{self._get_mask_type(var.dtype)}({cond})"
+        if mask:
+            if not mask.is_vec:
+                mask = f"{self._get_mask_type(var.dtype)}({mask})"
+            # We need not check when the mask is False
+            cond = f"({cond}) | ~({mask})"
+        cond = f"({cond}).all_masked()"
         return f'{self.assert_function}({cond}, "index out of bounds: {cond_print}")'
 
 
